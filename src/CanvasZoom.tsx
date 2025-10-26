@@ -12,27 +12,90 @@ interface Line {
   y2: number;
 }
 
+// Мировые координаты элементов
+const worldElements = [
+  { type: 'circle', x: 530, y: 120, diameter: 10, color: 'red' },
+  { type: 'circle', x: -127, y: 764, diameter: 10, color: 'red' }
+];
+
 const CanvasZoom: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scaleRef = useRef<number>(1);
   const offsetRef = useRef<Point>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const lastMousePosRef = useRef<Point>({ x: 0, y: 0 });
-  
-  // Генерация 5 случайных отрезков в формате [x1, y1, x2, y2]
-  const generateRandomLines = (): Line[] => {
-    const lines: Line[] = [];
-    for (let i = 0; i < 5; i++) {
-      const x1 = Math.random() * 400 - 200; // от -200 до 200
-      const y1 = Math.random() * 400 - 200; // от -200 до 200
-      const x2 = Math.random() * 400 - 200; // от -200 до 200
-      const y2 = Math.random() * 400 - 200; // от -200 до 200
-      lines.push({ x1, y1, x2, y2 });
-    }
-    return lines;
-  };
 
-  const linesRef = useRef<Line[]>(generateRandomLines());
+  // Преобразование мировых координат в экранные
+  const worldToScreen = useCallback((worldX: number, worldY: number): Point => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+
+    const scale = scaleRef.current;
+    const offset = offsetRef.current;
+
+    return {
+      x: (offset.x - worldX) * scale + canvas.width / 2,
+      y: (offset.y - worldY) * scale + canvas.height / 2
+    };
+  }, []);
+
+  // Преобразование экранных координат в мировые
+  const screenToWorld = useCallback((screenX: number, screenY: number): Point => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+
+    const scale = scaleRef.current;
+    const offset = offsetRef.current;
+
+    return {
+      x: (screenX - canvas.width / 2) / scale + offset.x,
+      y: (screenY - canvas.height / 2) / scale + offset.y
+    };
+  }, []);
+
+  // Отрисовка элементов в мировых координатах
+  const drawWorldElements = useCallback((ctx: CanvasRenderingContext2D) => {
+    const scale = scaleRef.current;
+
+    worldElements.forEach(element => {
+      if (element.type === 'circle') {
+        const screenPos = worldToScreen(element.x, element.y);
+        const screenDiameter = element.diameter * scale;
+
+        ctx.beginPath();
+        ctx.arc(screenPos.x, screenPos.y, screenDiameter / 2, 0, Math.PI * 2);
+        ctx.fillStyle = element.color;
+        ctx.fill();
+      }
+    });
+  }, [worldToScreen]);
+
+  // Отрисовка сетки/осей в мировых координатах
+  const drawGrid = useCallback((ctx: CanvasRenderingContext2D) => {
+    const scale = scaleRef.current;
+    const offset = offsetRef.current;
+
+    ctx.save();
+    ctx.translate(canvasRef.current!.width / 2, canvasRef.current!.height / 2);
+    ctx.scale(scale, scale);
+    ctx.translate(offset.x, offset.y);
+
+    // Отрисовка осей координат
+    ctx.beginPath();
+    ctx.strokeStyle = '#ccc';
+    ctx.lineWidth = 1 / scale;
+
+    // Горизонтальная ось
+    ctx.moveTo(-1000, 0);
+    ctx.lineTo(1000, 0);
+
+    // Вертикальная ось
+    ctx.moveTo(0, -1000);
+    ctx.lineTo(0, 1000);
+
+    ctx.stroke();
+    ctx.restore();
+  }, []);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -43,60 +106,17 @@ const CanvasZoom: React.FC = () => {
 
     // Очистка холста
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    // Сохранение состояния контекста
-    ctx.save();
-    
-    // Применение трансформаций
-    const scale = scaleRef.current;
-    const offset = offsetRef.current;
-    
-    ctx.translate(canvas.width / 2, canvas.height / 2);
-    ctx.scale(scale, scale);
-    ctx.translate(offset.x, offset.y);
 
-    // Отрисовка осей координат (опционально)
-    ctx.beginPath();
-    ctx.strokeStyle = '#ccc';
-    ctx.lineWidth = 1 / scale;
+    // Отрисовка сетки
+    drawGrid(ctx);
 
-    ctx.moveTo(-1000, 0);
-    ctx.lineTo(1000, 0);
-    ctx.moveTo(0, -1000);
-    ctx.lineTo(0, 1000);
-    ctx.stroke();
-
-    // Отрисовка линий
-    ctx.beginPath();
-    ctx.strokeStyle = 'blue';
-    ctx.lineWidth = 2 / scale;
-
-    linesRef.current.forEach(line => {
-      ctx.moveTo(line.x1, line.y1);
-      ctx.lineTo(line.x2, line.y2);
-    });
-
-    ctx.stroke();
-    
-    // Отрисовка точек концов отрезков (опционально)
-    ctx.fillStyle = 'red';
-    linesRef.current.forEach(line => {
-      ctx.beginPath();
-      ctx.arc(line.x1, line.y1, 3 / scale, 0, Math.PI * 2);
-      ctx.fill();
-      
-      ctx.beginPath();
-      ctx.arc(line.x2, line.y2, 3 / scale, 0, Math.PI * 2);
-      ctx.fill();
-    });
-    
-    // Восстановление состояния
-    ctx.restore();
-  }, []);
+    // Отрисовка мировых элементов
+    drawWorldElements(ctx);
+  }, [drawGrid, drawWorldElements]);
 
   const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
-    
+
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -104,38 +124,36 @@ const CanvasZoom: React.FC = () => {
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
 
+    // Получаем мировые координаты курсора до масштабирования
+    const worldBeforeZoom = screenToWorld(mouseX, mouseY);
+
     // Определяем направление зума
     const zoomFactor = 1.07;
     const zoom = e.deltaY < 0 ? zoomFactor : 1 / zoomFactor;
 
-    // Текущие мировые координаты курсора
-    const worldX = (mouseX - canvas.width / 2) / scaleRef.current - offsetRef.current.x;
-    const worldY = (mouseY - canvas.height / 2) / scaleRef.current - offsetRef.current.y;
-
     // Применяем масштабирование
     scaleRef.current *= zoom;
 
-    // Новые мировые координаты курсора после масштабирования
-    const newWorldX = (mouseX - canvas.width / 2) / scaleRef.current - offsetRef.current.x;
-    const newWorldY = (mouseY - canvas.height / 2) / scaleRef.current - offsetRef.current.y;
+    // Получаем мировые координаты курсора после масштабирования
+    const worldAfterZoom = screenToWorld(mouseX, mouseY);
 
     // Корректируем смещение так, чтобы точка под курсором осталась на месте
-    offsetRef.current.x += newWorldX - worldX;
-    offsetRef.current.y += newWorldY - worldY;
+    offsetRef.current.x += worldAfterZoom.x - worldBeforeZoom.x;
+    offsetRef.current.y += worldAfterZoom.y - worldBeforeZoom.y;
 
     draw();
-  }, [draw]);
+  }, [draw, screenToWorld]);
 
   // Добавляем обработчики для панинга
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (e.button !== 0) return; // Только левая кнопка мыши
-    
+
     setIsDragging(true);
     lastMousePosRef.current = {
       x: e.clientX,
       y: e.clientY
     };
-    
+
     // Меняем курсор на "grabbing"
     if (canvasRef.current) {
       canvasRef.current.style.cursor = 'grabbing';
@@ -144,29 +162,29 @@ const CanvasZoom: React.FC = () => {
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!isDragging) return;
-    
+
     const currentMousePos = {
       x: e.clientX,
       y: e.clientY
     };
-    
+
     // Вычисляем разницу в перемещении
     const deltaX = currentMousePos.x - lastMousePosRef.current.x;
     const deltaY = currentMousePos.y - lastMousePosRef.current.y;
-    
+
     // Обновляем смещение с учетом масштаба
     offsetRef.current.x += deltaX / scaleRef.current;
     offsetRef.current.y += deltaY / scaleRef.current;
-    
+
     // Обновляем последнюю позицию мыши
     lastMousePosRef.current = currentMousePos;
-    
+
     draw();
   }, [isDragging, draw]);
 
   const handleMouseUp = useCallback(() => {
     setIsDragging(false);
-    
+
     // Возвращаем обычный курсор
     if (canvasRef.current) {
       canvasRef.current.style.cursor = 'crosshair';
@@ -175,7 +193,7 @@ const CanvasZoom: React.FC = () => {
 
   const handleMouseLeave = useCallback(() => {
     setIsDragging(false);
-    
+
     // Возвращаем обычный курсор
     if (canvasRef.current) {
       canvasRef.current.style.cursor = 'crosshair';
@@ -207,8 +225,8 @@ const CanvasZoom: React.FC = () => {
   return (
     <canvas
       ref={canvasRef}
-      style={{ 
-        display: 'block', 
+      style={{
+        display: 'block',
         background: '#f5f5f5',
         cursor: 'crosshair'
       }}
