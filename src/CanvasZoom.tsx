@@ -1,122 +1,284 @@
-import React, { useRef, useEffect, useCallback, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
+import { handleCanvasZoom } from './logic/spaceParameters/handleCanvasZoom';
 
-interface Point {
+// Базовые интерфейсы
+interface Position {
   x: number;
   y: number;
 }
 
-interface Line {
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
+// Точки теперь имеют тип - управляющая или управляемая
+interface ControlPoint {
+  id: string;
+  position: Position;
+  state: boolean;
+  type: 'control'; // управляющая точка
 }
 
-// Мировые координаты элементов
-const worldElements = [
-  { type: 'circle', x: 530, y: 120, diameter: 10, color: 'red' },
-  { type: 'circle', x: -127, y: 764, diameter: 10, color: 'red' }
+interface ControlledPoint {
+  id: string;
+  position: Position;
+  state: boolean;
+  type: 'controlled'; // управляемая точка
+  controlledBy: string; // ID управляющей точки
+}
+
+type Point = ControlPoint | ControlledPoint;
+
+interface WireSegment {
+  start: Position;
+  end: Position;
+}
+
+interface Wire {
+  id: string;
+  startPointId: string; // ID управляющей точки
+  endPointId: string;   // ID управляемой точки
+  segments: WireSegment[];
+  state: boolean;
+}
+
+// Тестовые данные
+const initialPoints: Point[] = [
+  {
+    id: 'control1',
+    position: { x: 530, y: 120 },
+    state: false,
+    type: 'control'
+  },
+  {
+    id: 'controlled1',
+    position: { x: -127, y: 364 },
+    state: false,
+    type: 'controlled',
+    controlledBy: 'control1'
+  },
+  {
+    id: 'control2',
+    position: { x: 200, y: 300 },
+    state: false,
+    type: 'control'
+  },
+  {
+    id: 'controlled2',
+    position: { x: 400, y: 200 },
+    state: false,
+    type: 'controlled',
+    controlledBy: 'control2'
+  },
+];
+
+const initialWires: Wire[] = [
+  {
+    id: 'wire1',
+    startPointId: 'control1',
+    endPointId: 'controlled1',
+    segments: [
+      { start: { x: 530, y: 120 }, end: { x: 200, y: 120 } },
+      { start: { x: 200, y: 120 }, end: { x: 200, y: 364 } },
+      { start: { x: 200, y: 364 }, end: { x: -127, y: 364 } },
+    ],
+    state: false,
+  },
+  {
+    id: 'wire2',
+    startPointId: 'control2',
+    endPointId: 'controlled2',
+    segments: [
+      { start: { x: 200, y: 300 }, end: { x: 300, y: 300 } },
+      { start: { x: 300, y: 300 }, end: { x: 300, y: 200 } },
+      { start: { x: 300, y: 200 }, end: { x: 400, y: 200 } },
+    ],
+    state: false,
+  },
 ];
 
 const CanvasZoom: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scaleRef = useRef<number>(1);
-  const offsetRef = useRef<Point>({ x: 0, y: 0 });
+  const offsetRef = useRef<Position>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState<boolean>(false);
-  const lastMousePosRef = useRef<Point>({ x: 0, y: 0 });
+  const lastMousePosRef = useRef<Position>({ x: 0, y: 0 });
 
-  // Преобразование мировых координат в экранные
-  const worldToScreen = useCallback((worldX: number, worldY: number): Point => {
+  // Состояния для точек и проводов
+  const [points, setPoints] = useState<Point[]>(initialPoints);
+  const [wires, setWires] = useState<Wire[]>(initialWires);
+
+  // Преобразование координат
+  const worldToScreen = useCallback((worldX: number, worldY: number): Position => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
-
-    const scale = scaleRef.current;
-    const offset = offsetRef.current;
-
     return {
-      x: (offset.x - worldX) * scale + canvas.width / 2,
-      y: (offset.y - worldY) * scale + canvas.height / 2
+      x: (worldX - offsetRef.current.x) * scaleRef.current + canvas.width / 2,
+      y: (worldY - offsetRef.current.y) * scaleRef.current + canvas.height / 2,
     };
   }, []);
 
-  // Преобразование экранных координат в мировые
-  const screenToWorld = useCallback((screenX: number, screenY: number): Point => {
+  const screenToWorld = useCallback((screenX: number, screenY: number): Position => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
-
-    const scale = scaleRef.current;
-    const offset = offsetRef.current;
-
     return {
-      x: (screenX - canvas.width / 2) / scale + offset.x,
-      y: (screenY - canvas.height / 2) / scale + offset.y
+      x: (screenX - canvas.width / 2) / scaleRef.current + offsetRef.current.x,
+      y: (screenY - canvas.height / 2) / scaleRef.current + offsetRef.current.y,
     };
   }, []);
 
-  // Отрисовка элементов в мировых координатах
-  const drawWorldElements = useCallback((ctx: CanvasRenderingContext2D) => {
-    const scale = scaleRef.current;
+  // Функция для обновления состояния управляющей точки
+  const updateControlPointState = useCallback((pointId: string, newState: boolean) => {
+    setPoints(prevPoints => {
+      const updatedPoints = prevPoints.map(point => {
+        if (point.id === pointId && point.type === 'control') {
+          return { ...point, state: newState };
+        }
+        return point;
+      });
 
-    worldElements.forEach(element => {
-      if (element.type === 'circle') {
-        const screenPos = worldToScreen(element.x, element.y);
-        const screenDiameter = element.diameter * scale;
+      // Обновляем все управляемые точки, связанные с этой управляющей
+      const controlledPoints = updatedPoints.filter(
+        (p): p is ControlledPoint => p.type === 'controlled' && p.controlledBy === pointId
+      );
 
+      controlledPoints.forEach(controlledPoint => {
+        const wire = wires.find(w =>
+          w.startPointId === pointId && w.endPointId === controlledPoint.id
+        );
+
+        if (wire) {
+          // Обновляем состояние провода
+          setWires(prevWires =>
+            prevWires.map(w =>
+              w.id === wire.id ? { ...w, state: newState } : w
+            )
+          );
+
+          // Обновляем управляемую точку
+          const pointIndex = updatedPoints.findIndex(p => p.id === controlledPoint.id);
+          if (pointIndex !== -1) {
+            (updatedPoints[pointIndex] as ControlledPoint).state = newState;
+          }
+        }
+      });
+
+      return updatedPoints;
+    });
+  }, [wires]);
+
+  // Функция для получения цвета точки в зависимости от типа и состояния
+  const getPointColor = (point: Point): string => {
+    if (point.type === 'control') {
+      return point.state ? '#22c55e' : '#ef4444'; // зеленый/красный для управляющих
+    } else {
+      return point.state ? '#3b82f6' : '#6b7280'; // синий/серый для управляемых
+    }
+  };
+
+  // Функция для получения размера точки в зависимости от типа
+  const getPointSize = (point: Point): number => {
+    return point.type === 'control' ? 12 : 10; // управляющие точки немного больше
+  };
+
+  // Отрисовка точек
+  const drawPoints = useCallback((ctx: CanvasRenderingContext2D) => {
+    points.forEach(point => {
+      const screenPos = worldToScreen(point.position.x, point.position.y);
+      const pointSize = getPointSize(point) * scaleRef.current;
+
+      // Рисуем точку
+      ctx.beginPath();
+      ctx.arc(screenPos.x, screenPos.y, pointSize / 2, 0, Math.PI * 2);
+      ctx.fillStyle = getPointColor(point);
+      ctx.fill();
+
+      // Обводка
+      ctx.strokeStyle = point.state ? '#000000' : '#666666';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Подпись точки
+      ctx.fillStyle = point.state ? '#000000' : '#666666';
+      ctx.font = `${10 * scaleRef.current}px Arial`;
+      ctx.fillText(
+        point.id,
+        screenPos.x + pointSize / 2 + 2,
+        screenPos.y - pointSize / 2
+      );
+
+      // Специальная метка для управляющих точек
+      if (point.type === 'control') {
         ctx.beginPath();
-        ctx.arc(screenPos.x, screenPos.y, screenDiameter / 2, 0, Math.PI * 2);
-        ctx.fillStyle = element.color;
-        ctx.fill();
+        ctx.arc(screenPos.x, screenPos.y, (pointSize / 2) * 0.7, 0, Math.PI * 2);
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
       }
     });
-  }, [worldToScreen]);
+  }, [points, worldToScreen]);
 
-  // Отрисовка сетки/осей в мировых координатах
+  // Отрисовка проводов
+  const drawWires = useCallback((ctx: CanvasRenderingContext2D) => {
+    wires.forEach(wire => {
+      const startPoint = points.find(p => p.id === wire.startPointId);
+      const endPoint = points.find(p => p.id === wire.endPointId);
+
+      if (!startPoint || !endPoint) return;
+
+      // Цвет провода зависит от состояния
+      ctx.strokeStyle = wire.state ? '#3b82f6' : '#9ca3af';
+      ctx.lineWidth = 3 * scaleRef.current;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      // Рисуем все сегменты провода
+      wire.segments.forEach(segment => {
+        const startScreen = worldToScreen(segment.start.x, segment.start.y);
+        const endScreen = worldToScreen(segment.end.x, segment.end.y);
+
+        ctx.beginPath();
+        ctx.moveTo(startScreen.x, startScreen.y);
+        ctx.lineTo(endScreen.x, endScreen.y);
+        ctx.stroke();
+      });
+      
+    });
+  }, [wires, points, worldToScreen]);
+
+  // Отрисовка сетки
   const drawGrid = useCallback((ctx: CanvasRenderingContext2D) => {
-    const scale = scaleRef.current;
-    const offset = offsetRef.current;
-
-    ctx.save();
-    ctx.translate(canvasRef.current!.width / 2, canvasRef.current!.height / 2);
-    ctx.scale(scale, scale);
-    ctx.translate(offset.x, offset.y);
-
-    // Отрисовка осей координат
-    ctx.beginPath();
-    ctx.strokeStyle = '#ccc';
-    ctx.lineWidth = 1 / scale;
-
-    // Горизонтальная ось
-    ctx.moveTo(-1000, 0);
-    ctx.lineTo(1000, 0);
-
-    // Вертикальная ось
-    ctx.moveTo(0, -1000);
-    ctx.lineTo(0, 1000);
-
-    ctx.stroke();
-    ctx.restore();
-  }, []);
-
-  const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    ctx.strokeStyle = '#e5e7eb';
+    ctx.lineWidth = 1;
 
-    // Очистка холста
+    // Оси координат
+    ctx.strokeStyle = '#d1d5db';
+    ctx.lineWidth = 2;
+
+    const originX = worldToScreen(0, 0).x;
+    const originY = worldToScreen(0, 0).y;
+
+    ctx.beginPath();
+    ctx.moveTo(originX, 0);
+    ctx.lineTo(originX, canvas.height);
+    ctx.moveTo(0, originY);
+    ctx.lineTo(canvas.width, originY);
+    ctx.stroke();
+  }, [worldToScreen]);
+
+  // Основная функция отрисовки
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
+
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Отрисовка сетки
     drawGrid(ctx);
+    drawWires(ctx);
+    drawPoints(ctx);
+  }, [drawGrid, drawWires, drawPoints]);
 
-    // Отрисовка мировых элементов
-    drawWorldElements(ctx);
-  }, [drawGrid, drawWorldElements]);
-
-  const handleWheel = useCallback((e: WheelEvent) => {
-    e.preventDefault();
-
+  // Обработчик клика по точке (только для управляющих точек)
+  const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -124,37 +286,36 @@ const CanvasZoom: React.FC = () => {
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
 
-    // Получаем мировые координаты курсора до масштабирования
-    const worldBeforeZoom = screenToWorld(mouseX, mouseY);
+    // Ищем кликнутую управляющую точку
+    const clickedPoint = points.find(point => {
+      if (point.type !== 'control') return false; // Только управляющие точки
 
-    // Определяем направление зума
-    const zoomFactor = 1.07;
-    const zoom = e.deltaY < 0 ? zoomFactor : 1 / zoomFactor;
+      const screenPos = worldToScreen(point.position.x, point.position.y);
+      const pointSize = getPointSize(point) * scaleRef.current;
+      const distance = Math.sqrt(
+        Math.pow(mouseX - screenPos.x, 2) + Math.pow(mouseY - screenPos.y, 2)
+      );
+      return distance <= pointSize / 2;
+    }) as ControlPoint | undefined;
 
-    // Применяем масштабирование
-    scaleRef.current *= zoom;
+    if (clickedPoint) {
+      // Переключаем состояние только управляющей точки
+      updateControlPointState(clickedPoint.id, !clickedPoint.state);
+    }
+  }, [points, worldToScreen, updateControlPointState]);
 
-    // Получаем мировые координаты курсора после масштабирования
-    const worldAfterZoom = screenToWorld(mouseX, mouseY);
+  // Обработчики масштабирования и панорамирования (остаются прежними)
+  const handleWheel = useCallback((e: WheelEvent) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
 
-    // Корректируем смещение так, чтобы точка под курсором осталась на месте
-    offsetRef.current.x += worldAfterZoom.x - worldBeforeZoom.x;
-    offsetRef.current.y += worldAfterZoom.y - worldBeforeZoom.y;
+    handleCanvasZoom(e, canvas, scaleRef, offsetRef, screenToWorld, draw);
+  }, [screenToWorld, draw]);
 
-    draw();
-  }, [draw, screenToWorld]);
-
-  // Добавляем обработчики для панинга
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (e.button !== 0) return; // Только левая кнопка мыши
-
+    if (e.button !== 0) return;
     setIsDragging(true);
-    lastMousePosRef.current = {
-      x: e.clientX,
-      y: e.clientY
-    };
-
-    // Меняем курсор на "grabbing"
+    lastMousePosRef.current = { x: e.clientX, y: e.clientY };
     if (canvasRef.current) {
       canvasRef.current.style.cursor = 'grabbing';
     }
@@ -163,43 +324,24 @@ const CanvasZoom: React.FC = () => {
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!isDragging) return;
 
-    const currentMousePos = {
-      x: e.clientX,
-      y: e.clientY
-    };
+    const deltaX = e.clientX - lastMousePosRef.current.x;
+    const deltaY = e.clientY - lastMousePosRef.current.y;
 
-    // Вычисляем разницу в перемещении
-    const deltaX = currentMousePos.x - lastMousePosRef.current.x;
-    const deltaY = currentMousePos.y - lastMousePosRef.current.y;
+    offsetRef.current.x -= deltaX / scaleRef.current;
+    offsetRef.current.y -= deltaY / scaleRef.current;
 
-    // Обновляем смещение с учетом масштаба
-    offsetRef.current.x += deltaX / scaleRef.current;
-    offsetRef.current.y += deltaY / scaleRef.current;
-
-    // Обновляем последнюю позицию мыши
-    lastMousePosRef.current = currentMousePos;
-
+    lastMousePosRef.current = { x: e.clientX, y: e.clientY };
     draw();
   }, [isDragging, draw]);
 
   const handleMouseUp = useCallback(() => {
     setIsDragging(false);
-
-    // Возвращаем обычный курсор
     if (canvasRef.current) {
       canvasRef.current.style.cursor = 'crosshair';
     }
   }, []);
 
-  const handleMouseLeave = useCallback(() => {
-    setIsDragging(false);
-
-    // Возвращаем обычный курсор
-    if (canvasRef.current) {
-      canvasRef.current.style.cursor = 'crosshair';
-    }
-  }, []);
-
+  // useEffect для подписки на события
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -210,7 +352,6 @@ const CanvasZoom: React.FC = () => {
       draw();
     };
 
-    // Обработчики событий
     window.addEventListener('resize', resize);
     canvas.addEventListener('wheel', handleWheel);
 
@@ -220,20 +361,26 @@ const CanvasZoom: React.FC = () => {
       window.removeEventListener('resize', resize);
       canvas.removeEventListener('wheel', handleWheel);
     };
-  }, [draw, handleWheel]);
+  }, [handleWheel, draw]);
+
+  // Перерисовываем при изменении точек или проводов
+  useEffect(() => {
+    draw();
+  }, [points, wires, draw]);
 
   return (
     <canvas
       ref={canvasRef}
       style={{
         display: 'block',
-        background: '#f5f5f5',
+        background: '#f8fafc',
         cursor: 'crosshair'
       }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseLeave}
+      onMouseLeave={handleMouseUp}
+      onClick={handleCanvasClick}
     />
   );
 };
