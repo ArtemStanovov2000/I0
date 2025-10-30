@@ -1,249 +1,217 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { handleCanvasZoom } from './logic/spaceParameters/handleCanvasZoom';
+import React, { useRef, useEffect, useState } from 'react';
 
-// Базовые интерфейсы
 interface Position {
   x: number;
   y: number;
 }
 
-// Точки теперь имеют тип - управляющая или управляемая
+interface WireSegment {
+  xStart: number;
+  yStart: number;
+  xEnd: number;
+  yEnd: number;
+}
+
+interface Wire {
+  id: string;
+  segments: WireSegment[];
+  state: boolean;
+  startPointId: string;
+  endPointId: string;
+}
+
 interface ControlPoint {
   id: string;
   position: Position;
   state: boolean;
-  type: 'control'; // управляющая точка
+  type: 'control';
 }
 
 interface ControlledPoint {
   id: string;
   position: Position;
   state: boolean;
-  type: 'controlled'; // управляемая точка
-  controlledBy: string; // ID управляющей точки
+  type: 'controlled';
+  controlledBy: string[];
 }
 
 type Point = ControlPoint | ControlledPoint;
 
-interface WireSegment {
-  start: Position;
-  end: Position;
-}
-
-interface Wire {
-  id: string;
-  startPointId: string; // ID управляющей точки
-  endPointId: string;   // ID управляемой точки
-  segments: WireSegment[];
-  state: boolean;
-}
-
-// Тестовые данные
 const initialPoints: Point[] = [
   {
     id: 'control1',
-    position: { x: 530, y: 120 },
+    position: { x: 100, y: 100 },
     state: false,
-    type: 'control'
+    type: 'control',
   },
   {
     id: 'controlled1',
-    position: { x: -127, y: 364 },
+    position: { x: 300, y: 100 },
     state: false,
     type: 'controlled',
-    controlledBy: 'control1'
+    controlledBy: ['control1']
   },
+
+  // Одна управляющая -> две управляемые
   {
     id: 'control2',
-    position: { x: 200, y: 300 },
+    position: { x: 100, y: 300 },
     state: false,
-    type: 'control'
+    type: 'control',
   },
   {
     id: 'controlled2',
-    position: { x: 400, y: 200 },
+    position: { x: 300, y: 250 },
     state: false,
     type: 'controlled',
-    controlledBy: 'control2'
+    controlledBy: ['control2']
+  },
+  {
+    id: 'controlled3',
+    position: { x: 300, y: 350 },
+    state: false,
+    type: 'controlled',
+    controlledBy: ['control2']
+  },
+
+  // Две управляющие -> одна управляемая (логическое ИЛИ)
+  {
+    id: 'control3',
+    position: { x: 100, y: 500 },
+    state: false,
+    type: 'control',
+  },
+  {
+    id: 'control4',
+    position: { x: 100, y: 600 },
+    state: false,
+    type: 'control',
+  },
+  {
+    id: 'controlled4',
+    position: { x: 300, y: 550 },
+    state: false,
+    type: 'controlled',
+    controlledBy: ['control3', 'control4']
   },
 ];
 
-const initialWires: Wire[] = [
-  {
-    id: 'wire1',
-    startPointId: 'control1',
-    endPointId: 'controlled1',
-    segments: [
-      { start: { x: 530, y: 120 }, end: { x: 200, y: 120 } },
-      { start: { x: 200, y: 120 }, end: { x: 200, y: 364 } },
-      { start: { x: 200, y: 364 }, end: { x: -127, y: 364 } },
-    ],
-    state: false,
-  },
-  {
-    id: 'wire2',
-    startPointId: 'control2',
-    endPointId: 'controlled2',
-    segments: [
-      { start: { x: 200, y: 300 }, end: { x: 300, y: 300 } },
-      { start: { x: 300, y: 300 }, end: { x: 300, y: 200 } },
-      { start: { x: 300, y: 200 }, end: { x: 400, y: 200 } },
-    ],
-    state: false,
-  },
-];
+// Функция для генерации сегментов провода (L-образная трассировка)
+const generateWireSegments = (start: Position, end: Position): WireSegment[] => {
+  // Создаем промежуточную точку для излома провода
+  const midX = start.x + (end.x - start.x) / 2;
+
+  return [
+    { xStart: start.x, yStart: start.y, xEnd: midX, yEnd: start.y },
+    { xStart: midX, yStart: start.y, xEnd: midX, yEnd: end.y },
+    { xStart: midX, yStart: end.y, xEnd: end.x, yEnd: end.y }
+  ];
+};
+
+// Функция для создания проводов на основе точек
+const createWiresFromPoints = (points: Point[]): Wire[] => {
+  const wires: Wire[] = [];
+
+  points.forEach(point => {
+    if (point.type === 'controlled') {
+      point.controlledBy.forEach(controlId => {
+        const controlPoint = points.find(p => p.id === controlId) as ControlPoint;
+        if (controlPoint) {
+          const wireId = `wire-${controlId}-to-${point.id}`;
+          const segments = generateWireSegments(controlPoint.position, point.position);
+
+          wires.push({
+            id: wireId,
+            segments,
+            state: controlPoint.state,
+            startPointId: controlId,
+            endPointId: point.id
+          });
+        }
+      });
+    }
+  });
+
+  return wires;
+};
 
 const CanvasZoom: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scaleRef = useRef<number>(1);
   const offsetRef = useRef<Position>({ x: 0, y: 0 });
+  const [points, setPoints] = useState<Point[]>(initialPoints);
+  const [wires, setWires] = useState<Wire[]>([]);
+  const pointsRef = useRef<Point[]>(initialPoints);
+  const wiresRef = useRef<Wire[]>([]);
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const lastMousePosRef = useRef<Position>({ x: 0, y: 0 });
 
-  // Состояния для точек и проводов
-  const [points, setPoints] = useState<Point[]>(initialPoints);
-  const [wires, setWires] = useState<Wire[]>(initialWires);
+  // Инициализация проводов
+  useEffect(() => {
+    const initialWires = createWiresFromPoints(initialPoints);
+    setWires(initialWires);
+    wiresRef.current = initialWires;
+  }, []);
 
-  // Преобразование координат
-  const worldToScreen = useCallback((worldX: number, worldY: number): Position => {
+  // Обновляем ref при изменении points
+  useEffect(() => {
+    pointsRef.current = points;
+  }, [points]);
+
+  // Обновляем ref при изменении wires
+  useEffect(() => {
+    wiresRef.current = wires;
+  }, [wires]);
+
+  // Функции преобразования координат
+  const worldToScreen = (worldX: number, worldY: number): Position => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     return {
       x: (worldX - offsetRef.current.x) * scaleRef.current + canvas.width / 2,
       y: (worldY - offsetRef.current.y) * scaleRef.current + canvas.height / 2,
     };
-  }, []);
+  };
 
-  const screenToWorld = useCallback((screenX: number, screenY: number): Position => {
+  const screenToWorld = (screenX: number, screenY: number): Position => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     return {
       x: (screenX - canvas.width / 2) / scaleRef.current + offsetRef.current.x,
       y: (screenY - canvas.height / 2) / scaleRef.current + offsetRef.current.y,
     };
-  }, []);
+  };
 
-  // Функция для обновления состояния управляющей точки
-  const updateControlPointState = useCallback((pointId: string, newState: boolean) => {
-    setPoints(prevPoints => {
-      const updatedPoints = prevPoints.map(point => {
-        if (point.id === pointId && point.type === 'control') {
-          return { ...point, state: newState };
+  // Функция для обновления состояния проводов и управляемых точек
+  const updateWireAndControlledPoints = (controlPointId: string, newState: boolean) => {
+    // Обновляем провода, исходящие из этой control точки
+    setWires(prevWires =>
+      prevWires.map(wire =>
+        wire.startPointId === controlPointId
+          ? { ...wire, state: newState }
+          : wire
+      )
+    );
+
+    // Обновляем controlled points по логике ИЛИ
+    setPoints(prevPoints =>
+      prevPoints.map(point => {
+        if (point.type === 'controlled' && point.controlledBy.includes(controlPointId)) {
+          // Для каждой управляемой точки проверяем ВСЕ её control точки
+          const allControlPointsState = point.controlledBy.some(controlId => {
+            const controlPoint = prevPoints.find(p => p.id === controlId) as ControlPoint;
+            return controlPoint?.state || false;
+          });
+
+          return { ...point, state: allControlPointsState };
         }
         return point;
-      });
-
-      // Обновляем все управляемые точки, связанные с этой управляющей
-      const controlledPoints = updatedPoints.filter(
-        (p): p is ControlledPoint => p.type === 'controlled' && p.controlledBy === pointId
-      );
-
-      controlledPoints.forEach(controlledPoint => {
-        const wire = wires.find(w =>
-          w.startPointId === pointId && w.endPointId === controlledPoint.id
-        );
-
-        if (wire) {
-          // Обновляем состояние провода
-          setWires(prevWires =>
-            prevWires.map(w =>
-              w.id === wire.id ? { ...w, state: newState } : w
-            )
-          );
-
-          // Обновляем управляемую точку
-          const pointIndex = updatedPoints.findIndex(p => p.id === controlledPoint.id);
-          if (pointIndex !== -1) {
-            (updatedPoints[pointIndex] as ControlledPoint).state = newState;
-          }
-        }
-      });
-
-      return updatedPoints;
-    });
-  }, [wires]);
-
-  // Функция для получения цвета точки в зависимости от типа и состояния
-  const getPointColor = (point: Point): string => {
-    if (point.type === 'control') {
-      return point.state ? '#22c55e' : '#ef4444'; // зеленый/красный для управляющих
-    } else {
-      return point.state ? '#3b82f6' : '#6b7280'; // синий/серый для управляемых
-    }
+      })
+    );
   };
 
-  // Функция для получения размера точки в зависимости от типа
-  const getPointSize = (point: Point): number => {
-    return point.type === 'control' ? 12 : 10; // управляющие точки немного больше
-  };
-
-  // Отрисовка точек
-  const drawPoints = useCallback((ctx: CanvasRenderingContext2D) => {
-    points.forEach(point => {
-      const screenPos = worldToScreen(point.position.x, point.position.y);
-      const pointSize = getPointSize(point) * scaleRef.current;
-
-      // Рисуем точку
-      ctx.beginPath();
-      ctx.arc(screenPos.x, screenPos.y, pointSize / 2, 0, Math.PI * 2);
-      ctx.fillStyle = getPointColor(point);
-      ctx.fill();
-
-      // Обводка
-      ctx.strokeStyle = point.state ? '#000000' : '#666666';
-      ctx.lineWidth = 1;
-      ctx.stroke();
-
-      // Подпись точки
-      ctx.fillStyle = point.state ? '#000000' : '#666666';
-      ctx.font = `${10 * scaleRef.current}px Arial`;
-      ctx.fillText(
-        point.id,
-        screenPos.x + pointSize / 2 + 2,
-        screenPos.y - pointSize / 2
-      );
-
-      // Специальная метка для управляющих точек
-      if (point.type === 'control') {
-        ctx.beginPath();
-        ctx.arc(screenPos.x, screenPos.y, (pointSize / 2) * 0.7, 0, Math.PI * 2);
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-      }
-    });
-  }, [points, worldToScreen]);
-
-  // Отрисовка проводов
-  const drawWires = useCallback((ctx: CanvasRenderingContext2D) => {
-    wires.forEach(wire => {
-      const startPoint = points.find(p => p.id === wire.startPointId);
-      const endPoint = points.find(p => p.id === wire.endPointId);
-
-      if (!startPoint || !endPoint) return;
-
-      // Цвет провода зависит от состояния
-      ctx.strokeStyle = wire.state ? '#3b82f6' : '#9ca3af';
-      ctx.lineWidth = 3 * scaleRef.current;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-
-      // Рисуем все сегменты провода
-      wire.segments.forEach(segment => {
-        const startScreen = worldToScreen(segment.start.x, segment.start.y);
-        const endScreen = worldToScreen(segment.end.x, segment.end.y);
-
-        ctx.beginPath();
-        ctx.moveTo(startScreen.x, startScreen.y);
-        ctx.lineTo(endScreen.x, endScreen.y);
-        ctx.stroke();
-      });
-      
-    });
-  }, [wires, points, worldToScreen]);
-
-  // Отрисовка сетки
-  const drawGrid = useCallback((ctx: CanvasRenderingContext2D) => {
+  // Функции отрисовки
+  const drawGrid = (ctx: CanvasRenderingContext2D) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -251,7 +219,7 @@ const CanvasZoom: React.FC = () => {
     ctx.lineWidth = 1;
 
     // Оси координат
-    ctx.strokeStyle = '#d1d5db';
+    ctx.strokeStyle = '#9ca3af';
     ctx.lineWidth = 2;
 
     const originX = worldToScreen(0, 0).x;
@@ -263,10 +231,58 @@ const CanvasZoom: React.FC = () => {
     ctx.moveTo(0, originY);
     ctx.lineTo(canvas.width, originY);
     ctx.stroke();
-  }, [worldToScreen]);
+  };
 
-  // Основная функция отрисовки
-  const draw = useCallback(() => {
+  const drawWires = (ctx: CanvasRenderingContext2D) => {
+    wiresRef.current.forEach(wire => {
+      ctx.strokeStyle = wire.state ? '#22c55e' : '#ef4444';
+      ctx.lineWidth = 3 * scaleRef.current;
+      ctx.lineCap = 'round';
+
+      wire.segments.forEach(segment => {
+        const start = worldToScreen(segment.xStart, segment.yStart);
+        const end = worldToScreen(segment.xEnd, segment.yEnd);
+
+        ctx.beginPath();
+        ctx.moveTo(start.x, start.y);
+        ctx.lineTo(end.x, end.y);
+        ctx.stroke();
+      });
+    });
+  };
+
+  const drawPoints = (ctx: CanvasRenderingContext2D) => {
+    pointsRef.current.forEach(point => {
+      const screenPos = worldToScreen(point.position.x, point.position.y);
+      const pointSize = point.type === 'control' ? 12 : 10;
+      const scaledSize = pointSize * scaleRef.current;
+
+      // Основной круг точки
+      ctx.beginPath();
+      ctx.arc(screenPos.x, screenPos.y, scaledSize / 2, 0, Math.PI * 2);
+
+      if (point.type === 'control') {
+        ctx.fillStyle = point.state ? '#22c55e' : '#ef4444';
+      } else {
+        ctx.fillStyle = point.state ? '#3b82f6' : '#6b7280';
+      }
+
+      ctx.fill();
+
+      // Обводка точки
+      ctx.strokeStyle = '#1f2937';
+      ctx.lineWidth = 1 * scaleRef.current;
+      ctx.stroke();
+
+      // ID точки (для отладки)
+      ctx.fillStyle = '#1f2937';
+      ctx.font = `${10 * scaleRef.current}px Arial`;
+      ctx.textAlign = 'center';
+      ctx.fillText(point.id, screenPos.x, screenPos.y - scaledSize - 5);
+    });
+  };
+
+  const draw = () => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext('2d');
     if (!canvas || !ctx) return;
@@ -275,10 +291,12 @@ const CanvasZoom: React.FC = () => {
     drawGrid(ctx);
     drawWires(ctx);
     drawPoints(ctx);
-  }, [drawGrid, drawWires, drawPoints]);
+  };
 
-  // Обработчик клика по точке (только для управляющих точек)
-  const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+  // Обработчики событий
+  const handleWheel = (e: WheelEvent) => {
+    e.preventDefault();
+
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -286,87 +304,115 @@ const CanvasZoom: React.FC = () => {
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
 
-    // Ищем кликнутую управляющую точку
-    const clickedPoint = points.find(point => {
-      if (point.type !== 'control') return false; // Только управляющие точки
+    const worldBeforeZoom = screenToWorld(mouseX, mouseY);
+    const zoomFactor = 1.07;
+    const zoom = e.deltaY < 0 ? zoomFactor : 1 / zoomFactor;
 
-      const screenPos = worldToScreen(point.position.x, point.position.y);
-      const pointSize = getPointSize(point) * scaleRef.current;
-      const distance = Math.sqrt(
-        Math.pow(mouseX - screenPos.x, 2) + Math.pow(mouseY - screenPos.y, 2)
-      );
-      return distance <= pointSize / 2;
-    }) as ControlPoint | undefined;
+    scaleRef.current *= zoom;
 
-    if (clickedPoint) {
-      // Переключаем состояние только управляющей точки
-      updateControlPointState(clickedPoint.id, !clickedPoint.state);
-    }
-  }, [points, worldToScreen, updateControlPointState]);
+    const worldAfterZoom = screenToWorld(mouseX, mouseY);
+    offsetRef.current.x += worldBeforeZoom.x - worldAfterZoom.x;
+    offsetRef.current.y += worldBeforeZoom.y - worldAfterZoom.y;
 
-  // Обработчики масштабирования и панорамирования (остаются прежними)
-  const handleWheel = useCallback((e: WheelEvent) => {
+    draw();
+  };
+
+  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (e.button !== 0) return;
+
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    handleCanvasZoom(e, canvas, scaleRef, offsetRef, screenToWorld, draw);
-  }, [screenToWorld, draw]);
-
-  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (e.button !== 0) return;
     setIsDragging(true);
     lastMousePosRef.current = { x: e.clientX, y: e.clientY };
-    if (canvasRef.current) {
-      canvasRef.current.style.cursor = 'grabbing';
+    canvas.style.cursor = 'grabbing';
+
+    // Обработка клика по точкам
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    const worldPos = screenToWorld(mouseX, mouseY);
+
+    const searchRadius = 15 / scaleRef.current;
+
+    const clickedPoint = pointsRef.current.find(point => {
+      const distance = Math.sqrt(
+        Math.pow(point.position.x - worldPos.x, 2) +
+        Math.pow(point.position.y - worldPos.y, 2)
+      );
+      return distance <= searchRadius;
+    });
+
+    if (clickedPoint && clickedPoint.type === 'control') {
+      const newState = !clickedPoint.state;
+
+      setPoints(prevPoints =>
+        prevPoints.map(point =>
+          point.id === clickedPoint.id
+            ? { ...point, state: newState }
+            : point
+        )
+      );
+
+      // Обновляем провода и управляемые точки
+      updateWireAndControlledPoints(clickedPoint.id, newState);
     }
-  }, []);
+  };
 
-  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDragging) return;
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
 
-    const deltaX = e.clientX - lastMousePosRef.current.x;
-    const deltaY = e.clientY - lastMousePosRef.current.y;
+    if (isDragging) {
+      const deltaX = e.clientX - lastMousePosRef.current.x;
+      const deltaY = e.clientY - lastMousePosRef.current.y;
 
-    offsetRef.current.x -= deltaX / scaleRef.current;
-    offsetRef.current.y -= deltaY / scaleRef.current;
+      offsetRef.current.x -= deltaX / scaleRef.current;
+      offsetRef.current.y -= deltaY / scaleRef.current;
 
-    lastMousePosRef.current = { x: e.clientX, y: e.clientY };
-    draw();
-  }, [isDragging, draw]);
+      lastMousePosRef.current = { x: e.clientX, y: e.clientY };
+      draw();
+    }
+  };
 
-  const handleMouseUp = useCallback(() => {
+  const handleMouseUp = () => {
     setIsDragging(false);
     if (canvasRef.current) {
-      canvasRef.current.style.cursor = 'crosshair';
+      canvasRef.current.style.cursor = 'default';
     }
-  }, []);
+  };
 
-  // useEffect для подписки на события
+  // Эффекты
+  useEffect(() => {
+    draw();
+  }, [points, wires]);
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const resize = () => {
+    const handleResize = () => {
       canvas.width = window.innerWidth;
       canvas.height = window.innerHeight;
       draw();
     };
 
-    window.addEventListener('resize', resize);
+    window.addEventListener('resize', handleResize);
     canvas.addEventListener('wheel', handleWheel);
 
-    resize();
+    handleResize();
 
     return () => {
-      window.removeEventListener('resize', resize);
+      window.removeEventListener('resize', handleResize);
       canvas.removeEventListener('wheel', handleWheel);
     };
-  }, [handleWheel, draw]);
+  }, []);
 
-  // Перерисовываем при изменении точек или проводов
+  // Пересоздание проводов при изменении позиций точек
   useEffect(() => {
-    draw();
-  }, [points, wires, draw]);
+    const updatedWires = createWiresFromPoints(pointsRef.current);
+    setWires(updatedWires);
+  }, [points]);
 
   return (
     <canvas
@@ -374,13 +420,12 @@ const CanvasZoom: React.FC = () => {
       style={{
         display: 'block',
         background: '#f8fafc',
-        cursor: 'crosshair'
+        cursor: isDragging ? 'grabbing' : 'default'
       }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
-      onClick={handleCanvasClick}
     />
   );
 };
