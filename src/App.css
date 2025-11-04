@@ -40,3 +40,47 @@
 .read-the-docs {
   color: #888;
 }
+
+.canvas-container {
+  position: relative;
+}
+
+.standard-button-box {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+}
+
+.standard-button {
+  padding: 8px 16px;
+  margin: 4px;
+  font-size: 14px;
+  cursor: pointer;
+  background-color: #5674fc;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+}
+
+.standard-button:hover {
+  background-color: #364bc5;
+}
+
+.standard-button:active {
+  background-color: #2996d4;
+  transform: translateY(1px);
+}
+
+.standard-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.canvas {
+  display: block;
+  background: #f8fafc;
+  cursor: default;
+}
+
+.canvas-grabbing {
+  cursor: grabbing;
+}
