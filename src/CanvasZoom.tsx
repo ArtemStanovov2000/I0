@@ -164,10 +164,13 @@ const CanvasDrag: React.FC = () => {
   }, [draw]);
 
   return (
-    <div>
+    <div style={{position: 'relative'}}>
       <button
         onClick={() => setIsDrawingMode(!isDrawingMode)}
         style={{
+          position: 'absolute',
+          top: '10px',
+          left: '10px',
           background: isDrawingMode ? '#4CAF50' : '#f44336',
           color: 'white',
           padding: '10px',
