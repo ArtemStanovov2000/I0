@@ -24,7 +24,7 @@ export const transistors: Transistor[] = [
     position: {
       xCenter: 400,
       yCenter: 200,
-      orientation: "up"
+      orientation: "down"
     }
   }
 ];

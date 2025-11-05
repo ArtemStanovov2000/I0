@@ -9,11 +9,12 @@ const CanvasDrag: React.FC = () => {
   const offsetRef = useRef<PositionPoint>({ x: 0, y: 0 });
   const lastMousePosRef = useRef<PositionPoint>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
+  const [isDrawingMode, setIsDrawingMode] = useState(false);
 
   const worldToScreen = useCallback((worldX: number, worldY: number): PositionPoint => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
-    
+
     return {
       x: offsetRef.current.x + canvas.width / 2 - worldX,
       y: offsetRef.current.y + canvas.height / 2 - worldY,
@@ -37,13 +38,36 @@ const CanvasDrag: React.FC = () => {
     ctx.stroke();
   }, [worldToScreen]);
 
+  const findConnectionUnderCursor = useCallback((mouseX: number, mouseY: number): { transistor: Transistor; connection: 'source' | 'drain' | 'gate' } | null => {
+    for (const transistor of transistors) {
+      const screenPos = worldToScreen(transistor.position.xCenter, transistor.position.yCenter);
+      const connections = getConnectionPositions(screenPos, transistor.position.orientation);
+      const hitRadius = 9;
+      const connectionTypes = ['source', 'drain', 'gate'] as const;
+
+      for (const connectionType of connectionTypes) {
+        const connection = connections[connectionType];
+        const distance = Math.sqrt(
+          Math.pow(mouseX - connection.x, 2) +
+          Math.pow(mouseY - connection.y, 2)
+        );
+
+        if (distance <= hitRadius) {
+          return { transistor, connection: connectionType };
+        }
+      }
+    }
+
+    return null;
+  }, [worldToScreen]);
+
   const drawTransistor = useCallback((ctx: CanvasRenderingContext2D, transistor: Transistor) => {
     const position = worldToScreen(transistor.position.xCenter, transistor.position.yCenter);
-    
+
     drawTransistorBody(ctx, position, transistor.position.orientation);
-    
+
     const connectionPositions = getConnectionPositions(position, transistor.position.orientation);
-    
+
     drawConnection(ctx, connectionPositions.source.x, connectionPositions.source.y, transistor.source);
     drawConnection(ctx, connectionPositions.drain.x, connectionPositions.drain.y, transistor.drain);
     drawConnection(ctx, connectionPositions.gate.x, connectionPositions.gate.y, transistor.gate);
@@ -59,29 +83,58 @@ const CanvasDrag: React.FC = () => {
     transistors.forEach(transistor => drawTransistor(ctx, transistor));
   }, [drawGrid, drawTransistor]);
 
-  // Обработчики событий
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (e.button !== 0) return;
 
-    setIsDragging(true);
-    lastMousePosRef.current = { x: e.clientX, y: e.clientY };
-    if (canvasRef.current) {
-      canvasRef.current.style.cursor = 'grabbing';
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    if (isDrawingMode) {
+      const connectionUnderCursor = findConnectionUnderCursor(mouseX, mouseY);
+
+      if (connectionUnderCursor) {
+        console.log(`Найден вывод: ${connectionUnderCursor.connection} транзистора ${connectionUnderCursor.transistor.id}`);
+        // Начинаем рисовать линию от этого вывода
+      }
+    } else {
+      setIsDragging(true);
+      lastMousePosRef.current = { x: e.clientX, y: e.clientY };
+      canvas.style.cursor = 'grabbing';
     }
-  }, []);
+  }, [isDrawingMode, findConnectionUnderCursor]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDragging) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
 
-    const deltaX = e.clientX - lastMousePosRef.current.x;
-    const deltaY = e.clientY - lastMousePosRef.current.y;
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
 
-    offsetRef.current.x += deltaX;
-    offsetRef.current.y += deltaY;
+    if (isDrawingMode) {
+      const connectionUnderCursor = findConnectionUnderCursor(mouseX, mouseY);
 
-    lastMousePosRef.current = { x: e.clientX, y: e.clientY };
-    requestAnimationFrame(draw);
-  }, [isDragging, draw]);
+      if (connectionUnderCursor) {
+        canvas.style.cursor = 'crosshair';
+      } else {
+        canvas.style.cursor = 'default';
+      }
+    } else {
+      if (!isDragging) return;
+      const deltaX = e.clientX - lastMousePosRef.current.x;
+      const deltaY = e.clientY - lastMousePosRef.current.y;
+
+      offsetRef.current.x += deltaX;
+      offsetRef.current.y += deltaY;
+
+      lastMousePosRef.current = { x: e.clientX, y: e.clientY };
+      requestAnimationFrame(draw);
+    }
+  }, [isDrawingMode, isDragging, findConnectionUnderCursor, draw]);
 
   const handleMouseUp = useCallback(() => {
     setIsDragging(false);
@@ -90,7 +143,6 @@ const CanvasDrag: React.FC = () => {
     }
   }, []);
 
-  // Эффекты
   useEffect(() => {
     draw();
   }, [draw]);
@@ -112,18 +164,33 @@ const CanvasDrag: React.FC = () => {
   }, [draw]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      style={{
-        display: 'block',
-        background: '#f8fafc',
-        cursor: isDragging ? 'grabbing' : 'default'
-      }}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
-    />
+    <div>
+      <button
+        onClick={() => setIsDrawingMode(!isDrawingMode)}
+        style={{
+          background: isDrawingMode ? '#4CAF50' : '#f44336',
+          color: 'white',
+          padding: '10px',
+          border: 'none',
+          borderRadius: '4px',
+          cursor: 'pointer'
+        }}
+      >
+        {isDrawingMode ? 'Режим рисования (активен)' : 'Начать рисование'}
+      </button>
+      <canvas
+        ref={canvasRef}
+        style={{
+          display: 'block',
+          background: '#f8fafc',
+          cursor: isDragging ? 'grabbing' : 'default'
+        }}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+      />
+    </div>
   );
 };
 
