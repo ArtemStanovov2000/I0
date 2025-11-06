@@ -2,16 +2,21 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { drawConnection, drawTransistorBody, getConnectionPositions } from './drawingUtils';
 import { TRANSISTOR_CONFIG } from './constants';
 import { transistors } from './data/transistors';
-import type { PositionPoint, Transistor } from './types';
+import type { PositionPoint, Transistor, Wire, WireSegment } from './types';
+import { Wires } from './data/wires';
 
 const CanvasDrag: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const offsetRef = useRef<PositionPoint>({ x: 0, y: 0 });
   const lastMousePosRef = useRef<PositionPoint>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
-  const [isDrawingMode, setIsDrawingMode] = useState(false);
+  const [isDrawingMode, setIsDrawingMode] = useState(true);
+  // Добавляем состояние для рисования линии
+  const [isDrawingLine, setIsDrawingLine] = useState(false);
+  const [lineStart, setLineStart] = useState<PositionPoint | null>(null);
+  const [currentMousePos, setCurrentMousePos] = useState<PositionPoint | null>(null);
 
-  const worldToScreen = useCallback((worldX: number, worldY: number): PositionPoint => {
+  const worldToScreen = (worldX: number, worldY: number): PositionPoint => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
 
@@ -19,9 +24,19 @@ const CanvasDrag: React.FC = () => {
       x: offsetRef.current.x + canvas.width / 2 - worldX,
       y: offsetRef.current.y + canvas.height / 2 - worldY,
     };
-  }, []);
+  };
 
-  const drawGrid = useCallback((ctx: CanvasRenderingContext2D) => {
+  const screenToWorld = (screenX: number, screenY: number): PositionPoint => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+
+    return {
+      x: offsetRef.current.x + canvas.width / 2 - screenX,
+      y: offsetRef.current.y + canvas.height / 2 - screenY,
+    };
+  };
+
+  const drawGrid = (ctx: CanvasRenderingContext2D) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -36,7 +51,7 @@ const CanvasDrag: React.FC = () => {
     ctx.moveTo(0, origin.y);
     ctx.lineTo(canvas.width, origin.y);
     ctx.stroke();
-  }, [worldToScreen]);
+  }
 
   const findConnectionUnderCursor = useCallback((mouseX: number, mouseY: number): { transistor: Transistor; connection: 'source' | 'drain' | 'gate' } | null => {
     for (const transistor of transistors) {
@@ -59,9 +74,19 @@ const CanvasDrag: React.FC = () => {
     }
 
     return null;
-  }, [worldToScreen]);
+  }, []);
 
-  const drawTransistor = useCallback((ctx: CanvasRenderingContext2D, transistor: Transistor) => {
+  // Функция для получения мировых координат соединения
+  const getConnectionWorldPosition = (transistor: Transistor, connectionType: 'source' | 'drain' | 'gate'): PositionPoint => {
+    const screenCenter = worldToScreen(transistor.position.xCenter, transistor.position.yCenter);
+    const screenConnections = getConnectionPositions(screenCenter, transistor.position.orientation);
+    const screenConnection = screenConnections[connectionType];
+    
+    // Преобразуем обратно в мировые координаты
+    return screenToWorld(screenConnection.x, screenConnection.y);
+  }
+
+  const drawTransistor = (ctx: CanvasRenderingContext2D, transistor: Transistor) => {
     const position = worldToScreen(transistor.position.xCenter, transistor.position.yCenter);
 
     drawTransistorBody(ctx, position, transistor.position.orientation);
@@ -71,7 +96,41 @@ const CanvasDrag: React.FC = () => {
     drawConnection(ctx, connectionPositions.source.x, connectionPositions.source.y, transistor.source);
     drawConnection(ctx, connectionPositions.drain.x, connectionPositions.drain.y, transistor.drain);
     drawConnection(ctx, connectionPositions.gate.x, connectionPositions.gate.y, transistor.gate);
-  }, [worldToScreen]);
+  }
+
+  // Функция для рисования временной линии
+// Функция для рисования проводов из массива Wires
+const drawTemporaryLine = (ctx: CanvasRenderingContext2D) => {
+  // Рисуем все провода из массива Wires
+  Wires.forEach((wire: Wire) => {
+    wire.segments.forEach((segment: WireSegment) => {
+      const startScreen = worldToScreen(segment.xStart, segment.yStart);
+      const endScreen = worldToScreen(segment.xEnd, segment.yEnd);
+
+      ctx.strokeStyle = 'gray';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(startScreen.x, startScreen.y);
+      ctx.lineTo(endScreen.x, endScreen.y);
+      ctx.stroke();
+    });
+  });
+
+  // Дополнительно рисуем временную линию, если она активна
+  if (!isDrawingLine || !lineStart || !currentMousePos) return;
+
+  const startScreen = worldToScreen(lineStart.x, lineStart.y);
+  const endScreen = worldToScreen(currentMousePos.x, currentMousePos.y);
+
+  ctx.strokeStyle = 'gray';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([5, 5]); // Пунктирная линия для временной
+  ctx.beginPath();
+  ctx.moveTo(startScreen.x, startScreen.y);
+  ctx.lineTo(endScreen.x, endScreen.y);
+  ctx.stroke();
+  ctx.setLineDash([]); // Сбрасываем обратно на сплошную линию
+}
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -81,7 +140,8 @@ const CanvasDrag: React.FC = () => {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     drawGrid(ctx);
     transistors.forEach(transistor => drawTransistor(ctx, transistor));
-  }, [drawGrid, drawTransistor]);
+    drawTemporaryLine(ctx); // Рисуем временную линию поверх всего
+  }, []);
 
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (e.button !== 0) return;
@@ -96,16 +156,26 @@ const CanvasDrag: React.FC = () => {
     if (isDrawingMode) {
       const connectionUnderCursor = findConnectionUnderCursor(mouseX, mouseY);
 
-      if (connectionUnderCursor) {
-        console.log(`Найден вывод: ${connectionUnderCursor.connection} транзистора ${connectionUnderCursor.transistor.id}`);
-        // Начинаем рисовать линию от этого вывода
+      if (connectionUnderCursor?.connection === "drain") {
+        // Начинаем рисовать линию
+        const drainWorldPos = getConnectionWorldPosition(connectionUnderCursor.transistor, 'drain');
+        
+        setIsDrawingLine(true);
+        setLineStart(drainWorldPos);
+        
+        // Устанавливаем начальную позицию курсора
+        const mouseWorldPos = screenToWorld(mouseX, mouseY);
+        setCurrentMousePos(mouseWorldPos);
+        
+        canvas.style.cursor = 'crosshair';
+        console.log(drainWorldPos);
       }
     } else {
       setIsDragging(true);
       lastMousePosRef.current = { x: e.clientX, y: e.clientY };
       canvas.style.cursor = 'grabbing';
     }
-  }, [isDrawingMode, findConnectionUnderCursor]);
+  }, [isDrawingMode]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -116,12 +186,18 @@ const CanvasDrag: React.FC = () => {
     const mouseY = e.clientY - rect.top;
 
     if (isDrawingMode) {
-      const connectionUnderCursor = findConnectionUnderCursor(mouseX, mouseY);
-
-      if (connectionUnderCursor) {
-        canvas.style.cursor = 'crosshair';
+      if (isDrawingLine) {
+        // Обновляем позицию курсора в мировых координатах
+        const mouseWorldPos = screenToWorld(mouseX, mouseY);
+        setCurrentMousePos(mouseWorldPos);
+        requestAnimationFrame(draw);
       } else {
-        canvas.style.cursor = 'default';
+        const connectionUnderCursor = findConnectionUnderCursor(mouseX, mouseY);
+        if (connectionUnderCursor) {
+          canvas.style.cursor = 'crosshair';
+        } else {
+          canvas.style.cursor = 'default';
+        }
       }
     } else {
       if (!isDragging) return;
@@ -134,14 +210,22 @@ const CanvasDrag: React.FC = () => {
       lastMousePosRef.current = { x: e.clientX, y: e.clientY };
       requestAnimationFrame(draw);
     }
-  }, [isDrawingMode, isDragging, findConnectionUnderCursor, draw]);
+  }, [isDrawingMode, isDragging]);
 
   const handleMouseUp = useCallback(() => {
+    if (isDrawingLine) {
+      // Завершаем рисование линии
+      setIsDrawingLine(false);
+      setLineStart(null);
+      setCurrentMousePos(null);
+      console.log("Завершение рисования линии");
+    }
+    
     setIsDragging(false);
     if (canvasRef.current) {
       canvasRef.current.style.cursor = 'default';
     }
-  }, []);
+  }, [isDrawingLine]);
 
   useEffect(() => {
     draw();
@@ -164,7 +248,7 @@ const CanvasDrag: React.FC = () => {
   }, [draw]);
 
   return (
-    <div style={{position: 'relative'}}>
+    <div style={{ position: 'relative' }}>
       <button
         onClick={() => setIsDrawingMode(!isDrawingMode)}
         style={{

@@ -30,7 +30,7 @@ export interface Wire {
     segments: WireSegment[];
     startTransistorId: string;
     endTransistorId?: string;
-    startPoint: 'drain' | 'source';
+    startPoint: 'drain';
     endPoint?: 'source' | 'gate';
     id: string;
 }
