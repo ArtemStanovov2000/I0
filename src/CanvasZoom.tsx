@@ -1,5 +1,5 @@
 import type { PositionPoint, Transistor } from './types';
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { getConnectionPositions } from './getConnectionPositions';
 import { drawTransistor } from './drawindUtils/drawTransistorBody';
 import { transistors } from './data/transistors';
@@ -11,57 +11,97 @@ import { drawGrid } from './drawGrid';
 // Константы
 const GRID_STEP = 10; // Шаг сетки в пикселях
 
-const CanvasDrag: React.FC = () => {
-  // Рефы для хранения состояния, которое не требует перерисовки
-  const canvasRef = useRef<HTMLCanvasElement>(null); // Ссылка на canvas элемент
-  const offsetRef = useRef<PositionPoint>({ x: 0, y: 0 }); // Смещение холста для перетаскивания
-  const lastMousePosRef = useRef<PositionPoint>({ x: 0, y: 0 }); // Последняя позиция мыши для расчета дельты перетаскивания
+// Вспомогательные функции вынесены из компонента
+const snapToGrid = (point: PositionPoint): PositionPoint => {
+  return {
+    x: Math.round(point.x / GRID_STEP) * GRID_STEP,
+    y: Math.round(point.y / GRID_STEP) * GRID_STEP
+  };
+};
 
-  // Состояния компонента
-  const [isDragging, setIsDragging] = useState(false); // Режим перетаскивания холста
-  const [isDrawingMode, setIsDrawingMode] = useState(true); // Режим рисования проводов
-  const [currentWire, setCurrentWire] = useState<any>(null); // Текущий рисуемый провод
-  const [tempEndPoint, setTempEndPoint] = useState<PositionPoint | null>(null); // Временная конечная точка для предпросмотра
+const calculateSegmentEnd = (start: PositionPoint, end: PositionPoint): PositionPoint => {
+  const deltaX = Math.abs(end.x - start.x);
+  const deltaY = Math.abs(end.y - start.y);
 
-  // Функция для привязки точки к сетке
-  const snapToGrid = useCallback((point: PositionPoint): PositionPoint => {
+  if (deltaX > deltaY) {
     return {
-      x: Math.round(point.x / GRID_STEP) * GRID_STEP,
-      y: Math.round(point.y / GRID_STEP) * GRID_STEP
+      x: Math.round(end.x / GRID_STEP) * GRID_STEP,
+      y: start.y
     };
-  }, []);
+  } else {
+    return {
+      x: start.x,
+      y: Math.round(end.y / GRID_STEP) * GRID_STEP
+    };
+  }
+};
 
-  // Функция для определения ориентации сегмента (горизонтальный/вертикальный)
-  const calculateSegmentEnd = useCallback((start: PositionPoint, end: PositionPoint): PositionPoint => {
-    const deltaX = Math.abs(end.x - start.x);
-    const deltaY = Math.abs(end.y - start.y);
+const getMousePosition = (e: React.MouseEvent<HTMLCanvasElement>, canvas: HTMLCanvasElement) => {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    screenX: e.clientX - rect.left,
+    screenY: e.clientY - rect.top
+  };
+};
 
-    // Определяем, будет ли сегмент горизонтальным или вертикальным
-    // на основе большего смещения
-    if (deltaX > deltaY) {
-      // Горизонтальный сегмент - сохраняем Y, привязываем X к сетке
-      return {
-        x: Math.round(end.x / GRID_STEP) * GRID_STEP,
-        y: start.y
-      };
-    } else {
-      // Вертикальный сегмент - сохраняем X, привязываем Y к сетке
-      return {
-        x: start.x,
-        y: Math.round(end.y / GRID_STEP) * GRID_STEP
-      };
+const createNewWire = (transistor: Transistor) => ({
+  segments: [],
+  startTransistorId: transistor.id,
+  startPoint: 'drain' as const,
+  id: `wire-${Date.now()}`
+});
+
+const createCompletedWire = (
+  currentWire: any,
+  connectionUnderCursor: { transistor: Transistor; connection: 'source' | 'drain' | 'gate' },
+  connectionWorldPos: PositionPoint,
+  lastSegmentEnd: PositionPoint
+) => ({
+  ...currentWire,
+  segments: [
+    ...currentWire.segments,
+    {
+      xStart: lastSegmentEnd.x,
+      yStart: lastSegmentEnd.y,
+      xEnd: connectionWorldPos.x,
+      yEnd: connectionWorldPos.y
     }
-  }, []);
+  ],
+  endTransistorId: connectionUnderCursor.transistor.id,
+  endPoint: connectionUnderCursor.connection
+});
+
+const createWireWithNewSegment = (currentWire: any, snappedEndPoint: PositionPoint, lastSegmentEnd: PositionPoint) => ({
+  ...currentWire,
+  segments: [
+    ...currentWire.segments,
+    {
+      xStart: lastSegmentEnd.x,
+      yStart: lastSegmentEnd.y,
+      xEnd: snappedEndPoint.x,
+      yEnd: snappedEndPoint.y
+    }
+  ]
+});
+
+const CanvasDrag: React.FC = () => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const offsetRef = useRef<PositionPoint>({ x: 0, y: 0 });
+  const lastMousePosRef = useRef<PositionPoint>({ x: 0, y: 0 });
+
+  const [isDragging, setIsDragging] = useState(false);
+  const [isDrawingMode, setIsDrawingMode] = useState(true);
+  const [currentWire, setCurrentWire] = useState<any>(null);
+  const [tempEndPoint, setTempEndPoint] = useState<PositionPoint | null>(null);
 
   // Поиск соединения транзистора под курсором мыши
-  const findConnectionUnderCursor = useCallback((mouseX: number, mouseY: number): { transistor: Transistor; connection: 'source' | 'drain' | 'gate' } | null => {
+  const findConnectionUnderCursor = (mouseX: number, mouseY: number) => {
     for (const transistor of transistors) {
       const screenPos = worldToScreen(transistor.position.xCenter, transistor.position.yCenter, canvasRef, offsetRef);
       const connections = getConnectionPositions(screenPos, transistor.position.orientation);
-      const hitRadius = 9; // Радиус попадания для соединений
+      const hitRadius = 9;
       const connectionTypes = ['source', 'drain', 'gate'] as const;
 
-      // Проверяем каждое соединение транзистора на попадание курсора
       for (const connectionType of connectionTypes) {
         const connection = connections[connectionType];
         const distance = Math.sqrt(
@@ -76,35 +116,32 @@ const CanvasDrag: React.FC = () => {
     }
 
     return null;
-  }, []);
+  };
 
   // Функция для получения мировых координат соединения транзистора
-  const getConnectionWorldPosition = (transistor: Transistor, connectionType: 'source' | 'drain' | 'gate'): PositionPoint => {
+  const getConnectionWorldPosition = (transistor: Transistor, connectionType: 'source' | 'drain' | 'gate') => {
     const screenCenter = worldToScreen(transistor.position.xCenter, transistor.position.yCenter, canvasRef, offsetRef);
     const screenConnections = getConnectionPositions(screenCenter, transistor.position.orientation);
     const screenConnection = screenConnections[connectionType];
 
-    // Преобразуем обратно в мировые координаты
     return screenToWorld(screenConnection.x, screenConnection.y, canvasRef, offsetRef);
-  }
+  };
 
   // Основная функция отрисовки
-  const draw = useCallback(() => {
+  const draw = () => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext('2d');
     if (!canvas || !ctx) return;
 
-    // Очистка холста
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    // Отрисовка элементов
-    drawGrid(ctx, canvasRef, offsetRef); // Сетка
-    transistors.forEach(transistor => drawTransistor(ctx, transistor, canvasRef, offsetRef)); // Транзисторы
-    drawWires(ctx, canvasRef, offsetRef); // Завершенные провода
+
+    drawGrid(ctx, canvasRef, offsetRef);
+    transistors.forEach(transistor => drawTransistor(ctx, transistor, canvasRef, offsetRef));
+    drawWires(ctx, canvasRef, offsetRef);
 
     // Рисуем текущий провод в процессе рисования
+    // Рисуем текущий провод в процессе рисования
     if (currentWire && currentWire.segments.length > 0) {
-      // Рисуем уже завершенные сегменты
       currentWire.segments.forEach((segment: any) => {
         const startScreen = worldToScreen(segment.xStart, segment.yStart, canvasRef, offsetRef);
         const endScreen = worldToScreen(segment.xEnd, segment.yEnd, canvasRef, offsetRef);
@@ -117,7 +154,7 @@ const CanvasDrag: React.FC = () => {
         ctx.stroke();
       });
 
-      // Рисуем временный сегмент (предпросмотр) пунктиром
+      // Рисуем временный сегмент пунктиром от последнего завершенного сегмента
       if (tempEndPoint) {
         const lastSegment = currentWire.segments[currentWire.segments.length - 1];
         const startScreen = worldToScreen(lastSegment.xEnd, lastSegment.yEnd, canvasRef, offsetRef);
@@ -125,23 +162,31 @@ const CanvasDrag: React.FC = () => {
 
         ctx.strokeStyle = 'blue';
         ctx.lineWidth = 2;
-        ctx.setLineDash([5, 5]); // Пунктирная линия для предпросмотра
+        ctx.setLineDash([5, 5]);
         ctx.beginPath();
         ctx.moveTo(startScreen.x, startScreen.y);
         ctx.lineTo(endScreen.x, endScreen.y);
         ctx.stroke();
-        ctx.setLineDash([]); // Сбрасываем пунктир
+        ctx.setLineDash([]);
+      }
+    } else if (currentWire && tempEndPoint) {
+      // Рисуем первый временный сегмент от drain транзистора
+      const startTransistor = transistors.find(t => t.id === currentWire.startTransistorId);
+      if (startTransistor) {
+        const drainWorldPos = getConnectionWorldPosition(startTransistor, 'drain');
+        const startScreen = worldToScreen(drainWorldPos.x, drainWorldPos.y, canvasRef, offsetRef);
+        const endScreen = worldToScreen(tempEndPoint.x, tempEndPoint.y, canvasRef, offsetRef);
+
+        ctx.strokeStyle = 'blue';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        ctx.moveTo(startScreen.x, startScreen.y);
+        ctx.lineTo(endScreen.x, endScreen.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
       }
     }
-  }, [currentWire, tempEndPoint]);
-
-  // Получение позиции мыши относительно canvas
-  const getMousePosition = (e: React.MouseEvent<HTMLCanvasElement>, canvas: HTMLCanvasElement) => {
-    const rect = canvas.getBoundingClientRect();
-    return {
-      screenX: e.clientX - rect.left,
-      screenY: e.clientY - rect.top
-    };
   };
 
   // Установка курсора для canvas
@@ -151,16 +196,8 @@ const CanvasDrag: React.FC = () => {
     }
   };
 
-  // Создание нового провода
-  const createNewWire = (transistor: Transistor) => ({
-    segments: [],
-    startTransistorId: transistor.id,
-    startPoint: 'drain' as const,
-    id: `wire-${Date.now()}` // Уникальный ID на основе времени
-  });
-
   // Получение конечной точки последнего сегмента
-  const getLastSegmentEnd = (): PositionPoint => {
+  const getLastSegmentEnd = () => {
     if (currentWire && currentWire.segments.length > 0) {
       const lastSegment = currentWire.segments[currentWire.segments.length - 1];
       return { x: lastSegment.xEnd, y: lastSegment.yEnd };
@@ -176,7 +213,6 @@ const CanvasDrag: React.FC = () => {
     connectionUnderCursor: { transistor: Transistor; connection: 'source' | 'drain' | 'gate' } | null,
     mouseWorldPos: PositionPoint
   ) => {
-    // Начинаем провод только если кликнули на drain
     if (connectionUnderCursor?.connection === "drain") {
       const newWire = createNewWire(connectionUnderCursor.transistor);
       setCurrentWire(newWire);
@@ -188,14 +224,25 @@ const CanvasDrag: React.FC = () => {
   // Обновление курсора при наведении на соединения
   const updateCursorForConnections = (mousePosition: { screenX: number; screenY: number }) => {
     const connectionUnderCursor = findConnectionUnderCursor(mousePosition.screenX, mousePosition.screenY);
-    // Меняем курсор на crosshair только при наведении на drain
     setCanvasCursor(connectionUnderCursor?.connection === "drain" ? 'crosshair' : 'default');
   };
 
   // Обновление временной конечной точки для предпросмотра
   const updateTempWireEnd = (mouseWorldPos: PositionPoint) => {
-    const lastSegmentEnd = getLastSegmentEnd();
-    const snappedEndPoint = calculateSegmentEnd(lastSegmentEnd, mouseWorldPos);
+    let startPoint: PositionPoint;
+
+    if (currentWire && currentWire.segments.length > 0) {
+      // Берем конечную точку последнего сегмента
+      startPoint = getLastSegmentEnd();
+    } else if (currentWire) {
+      // Берем позицию drain стартового транзистора
+      const startTransistor = transistors.find(t => t.id === currentWire.startTransistorId);
+      startPoint = getConnectionWorldPosition(startTransistor!, 'drain');
+    } else {
+      return;
+    }
+
+    const snappedEndPoint = calculateSegmentEnd(startPoint, mouseWorldPos);
     setTempEndPoint(snappedEndPoint);
   };
 
@@ -204,10 +251,8 @@ const CanvasDrag: React.FC = () => {
     const mouseWorldPos = screenToWorld(mousePosition.screenX, mousePosition.screenY, canvasRef, offsetRef);
 
     if (currentWire) {
-      // Если рисуем провод - обновляем предпросмотр
       updateTempWireEnd(mouseWorldPos);
     } else {
-      // Если не рисуем - обновляем курсор при наведении на соединения
       updateCursorForConnections(mousePosition);
     }
 
@@ -218,15 +263,12 @@ const CanvasDrag: React.FC = () => {
   const handleDragModeMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!isDragging) return;
 
-    // Расчет смещения для перетаскивания холста
     const deltaX = e.clientX - lastMousePosRef.current.x;
     const deltaY = e.clientY - lastMousePosRef.current.y;
 
-    // Обновление смещения холста
     offsetRef.current.x += deltaX;
     offsetRef.current.y += deltaY;
 
-    // Сохранение текущей позиции мыши для следующего расчета
     lastMousePosRef.current = { x: e.clientX, y: e.clientY };
     requestAnimationFrame(draw);
   };
@@ -238,54 +280,16 @@ const CanvasDrag: React.FC = () => {
     setCanvasCursor('default');
   };
 
-  // Создание завершенного провода
-  const createCompletedWire = (
-    connectionUnderCursor: { transistor: Transistor; connection: 'source' | 'drain' | 'gate' },
-    connectionWorldPos: PositionPoint,
-    lastSegmentEnd: PositionPoint
-  ) => ({
-    ...currentWire!,
-    segments: [
-      ...currentWire!.segments,
-      {
-        xStart: lastSegmentEnd.x,
-        yStart: lastSegmentEnd.y,
-        xEnd: connectionWorldPos.x, // Точные координаты соединения
-        yEnd: connectionWorldPos.y
-      }
-    ],
-    endTransistorId: connectionUnderCursor.transistor.id,
-    endPoint: connectionUnderCursor.connection
-  });
-
   // Завершение провода при подключении к транзистору
   const completeWire = (connectionUnderCursor: { transistor: Transistor; connection: 'source' | 'drain' | 'gate' }) => {
     const connectionWorldPos = getConnectionWorldPosition(connectionUnderCursor.transistor, connectionUnderCursor.connection);
     const lastSegmentEnd = getLastSegmentEnd();
 
-    const completedWire = createCompletedWire(connectionUnderCursor, connectionWorldPos, lastSegmentEnd);
-    Wires.push(completedWire); // Добавляем провод в глобальный массив
+    const completedWire = createCompletedWire(currentWire!, connectionUnderCursor, connectionWorldPos, lastSegmentEnd);
+    Wires.push(completedWire);
 
     finishWireDrawing();
     console.log("Завершение провода:", completedWire);
-  };
-
-  // Создание провода с новым сегментом
-  const createWireWithNewSegment = (snappedEndPoint: PositionPoint) => {
-    const lastSegmentEnd = getLastSegmentEnd();
-
-    return {
-      ...currentWire!,
-      segments: [
-        ...currentWire!.segments,
-        {
-          xStart: lastSegmentEnd.x,
-          yStart: lastSegmentEnd.y,
-          xEnd: snappedEndPoint.x, // Координаты с привязкой к сетке
-          yEnd: snappedEndPoint.y
-        }
-      ]
-    };
   };
 
   // Добавление нового сегмента к проводу
@@ -293,7 +297,7 @@ const CanvasDrag: React.FC = () => {
     const lastSegmentEnd = getLastSegmentEnd();
     const snappedEndPoint = calculateSegmentEnd(lastSegmentEnd, mouseWorldPos);
 
-    const updatedWire = createWireWithNewSegment(snappedEndPoint);
+    const updatedWire = createWireWithNewSegment(currentWire!, snappedEndPoint, lastSegmentEnd);
     setCurrentWire(updatedWire);
     setTempEndPoint(snappedEndPoint);
     console.log("Добавлен новый сегмент:", updatedWire);
@@ -304,11 +308,9 @@ const CanvasDrag: React.FC = () => {
     connectionUnderCursor: { transistor: Transistor; connection: 'source' | 'drain' | 'gate' } | null,
     mouseWorldPos: PositionPoint
   ) => {
-    // Если кликнули на source или gate - завершаем провод
     if (connectionUnderCursor && (connectionUnderCursor.connection === "source" || connectionUnderCursor.connection === "gate")) {
       completeWire(connectionUnderCursor);
     } else {
-      // Иначе добавляем новый сегмент
       addNewSegment(mouseWorldPos);
     }
   };
@@ -319,10 +321,8 @@ const CanvasDrag: React.FC = () => {
     const mouseWorldPos = screenToWorld(mousePosition.screenX, mousePosition.screenY, canvasRef, offsetRef);
 
     if (!currentWire) {
-      // Начало нового провода
       handleStartNewWire(connectionUnderCursor, mouseWorldPos);
     } else {
-      // Продолжение существующего провода
       handleContinueWire(connectionUnderCursor, mouseWorldPos);
     }
   };
@@ -336,9 +336,8 @@ const CanvasDrag: React.FC = () => {
 
   // === ОСНОВНЫЕ ОБРАБОТЧИКИ СОБЫТИЙ ===
 
-  // Обработчик нажатия кнопки мыши
-  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (e.button !== 0) return; // Только левая кнопка мыши
+  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (e.button !== 0) return;
 
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -350,10 +349,9 @@ const CanvasDrag: React.FC = () => {
     } else {
       handleDragModeMouseDown(e);
     }
-  }, [isDrawingMode, currentWire, calculateSegmentEnd]);
+  };
 
-  // Обработчик движения мыши
-  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -364,17 +362,16 @@ const CanvasDrag: React.FC = () => {
     } else {
       handleDragModeMouseMove(e);
     }
-  }, [isDrawingMode, isDragging, currentWire, calculateSegmentEnd]);
+  };
 
-  // Обработчик отпускания кнопки мыши
-  const handleMouseUp = useCallback(() => {
+  const handleMouseUp = () => {
     if (!isDrawingMode) {
       setIsDragging(false);
       if (canvasRef.current) {
         canvasRef.current.style.cursor = 'default';
       }
     }
-  }, [isDrawingMode]);
+  };
 
   // Обработчик Escape для отмены рисования
   useEffect(() => {
@@ -396,7 +393,7 @@ const CanvasDrag: React.FC = () => {
   // Эффект для отрисовки при изменении состояния
   useEffect(() => {
     draw();
-  }, [draw]);
+  });
 
   // Эффект для обработки изменения размера окна
   useEffect(() => {
@@ -410,14 +407,13 @@ const CanvasDrag: React.FC = () => {
     };
 
     window.addEventListener('resize', handleResize);
-    handleResize(); // Инициализация размера
+    handleResize();
 
     return () => window.removeEventListener('resize', handleResize);
-  }, [draw]);
+  }, []);
 
   return (
     <div style={{ position: 'relative' }}>
-      {/* Кнопка переключения режима */}
       <button
         onClick={() => setIsDrawingMode(!isDrawingMode)}
         style={{
@@ -434,8 +430,7 @@ const CanvasDrag: React.FC = () => {
       >
         {isDrawingMode ? 'Режим рисования (активен)' : 'Начать рисование'}
       </button>
-      
-      {/* Информация о процессе рисования */}
+
       <div style={{
         position: 'absolute',
         top: '10px',
@@ -448,8 +443,7 @@ const CanvasDrag: React.FC = () => {
       }}>
         Рисуется провод. ESC для отмены
       </div>
-      
-      {/* Основной canvas элемент */}
+
       <canvas
         ref={canvasRef}
         style={{
